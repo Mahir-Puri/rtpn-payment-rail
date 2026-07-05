@@ -1,0 +1,35 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: rtpn-clearing-hub
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/rtpn}
+    username: ${POSTGRES_USER:rtpn}
+    password: ${POSTGRES_PASSWORD:rtpn}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  data:
+    mongodb:
+      uri: ${MONGO_URI:mongodb://localhost:27017/rtpn_audit}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9094}
+    consumer:
+      group-id: clearing-hub
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+rtpn:
+  topics:
+    inbound: payments.inbound
+    cleared: payments.cleared
+    rejected: payments.rejected
+  risk:
+    max-payments-per-minute: 25
