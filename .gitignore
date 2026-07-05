@@ -1,0 +1,8 @@
+target/
+*.class
+__pycache__/
+*.pyc
+.venv/
+.idea/
+*.iml
+.vscode/
