@@ -1,4 +1,4 @@
-# RTPN — Real-Time Payments Network Simulator
+# RTPN - Real-Time Payments Network Simulator
 
 A working model of a real-time clearing and settlement rail, in the spirit of
 Canada's Real-Time Rail (RTR) and Interac e-Transfer infrastructure.
