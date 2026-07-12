@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  hub-tests:
+    name: Hub (Java / Maven)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Run JUnit tests
+        run: mvn -B test
+        working-directory: hub
+
+  python-tests:
+    name: Participants & Copilot (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Participant tests (reconciliation math)
+        run: pytest tests/ -q
+        working-directory: participants
+
+      - name: Copilot tests (tool logic)
+        run: pytest tests/ -q
+        working-directory: copilot
