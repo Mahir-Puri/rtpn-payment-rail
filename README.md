@@ -43,6 +43,41 @@ production rails care about.
               (outcome events for downstream)                   replays audit vs. balances
 ```
 
+## Ask the Rail — AI Operations Copilot
+
+A natural-language interface over the clearing hub, built as a separate service in `copilot/`.
+
+Ask questions an on-call engineer would ask:
+
+- _"how many payments were rejected and what were the top reasons?"_
+- _"which participant is running lowest on liquidity right now?"_
+- _"show me ALPHA_BANK's recent rejected payments"_
+
+Claude plans its own tool calls against the audit trail and hub API, then answers with cited message IDs and real numbers. The copilot has four read-only tools: single payment lookup, audit trail search, live balance retrieval, and Mongo aggregation stats.
+
+**Design rule:** the AI is strictly advisory and never touches the settlement path. There is no tool that can create, retry, reverse, or modify a payment. Clearing stays deterministic and auditable; the LLM sits outside the path of money movement entirely.
+
+### Running the copilot
+
+Requires the main stack running (postgres, mongo, kafka, hub) and an Anthropic API key from [console.anthropic.com](https://console.anthropic.com).
+
+```bash
+cd copilot
+pip3 install -r requirements.txt
+export ANTHROPIC_API_KEY=sk-ant-...
+uvicorn app:app --port 8090
+```
+
+Open **http://localhost:8090** for the demo page, or hit the API directly:
+
+```bash
+curl -s -X POST localhost:8090/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "which participant has the lowest settlement balance right now?"}'
+```
+
+See [`copilot/README.md`](copilot/README.md) for full documentation.
+
 ## Design decisions
 
 **PostgreSQL for settlement, and why not Mongo.** Settlement is the one place
