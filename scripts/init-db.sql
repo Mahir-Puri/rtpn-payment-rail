@@ -37,3 +37,13 @@ VALUES ('ALPHA_BANK', 1000000.0000, 1000000.0000, 'CAD'),
     ('BETA_BANK', 1000000.0000, 1000000.0000, 'CAD'),
     ('GAMMA_CU', 500000.0000, 500000.0000, 'CAD'),
     ('DELTA_FIN', 250000.0000, 250000.0000, 'CAD');
+CREATE TABLE outbox_events (
+    id BIGSERIAL PRIMARY KEY,
+    message_id VARCHAR(64) NOT NULL,
+    topic VARCHAR(128) NOT NULL,
+    payload TEXT NOT NULL,
+    published BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_outbox_unpublished ON outbox_events (published, created_at)
+WHERE published = false;
