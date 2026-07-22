@@ -1,11 +1,13 @@
-# RTPN - Real-Time Payments Network Simulator
+# RTPN — Real-Time Payments Network Simulator
+
+![CI](https://github.com/Mahir-Puri/rtpn-payment-rail/actions/workflows/ci.yml/badge.svg)
 
 A working model of a real-time clearing and settlement rail, in the spirit of
 Canada's Real-Time Rail (RTR) and Interac e-Transfer infrastructure.
-Participant financial institutions exchange ISO 20022-style credit-transfer
-messages over Kafka; a central clearing hub validates them, screens them for
-risk, and settles them with finality on a double-entry ledger — exactly once,
-even under redelivery and concurrency.
+Participant financial institutions exchange ISO 20022 pacs.008 XML messages
+over Kafka; a central clearing hub validates them, screens them for risk, and
+settles them with finality on a double-entry ledger — exactly once, even under
+redelivery and concurrency.
 
 ## Why this exists
 
@@ -19,7 +21,7 @@ production rails care about.
 ## Architecture
 
 ```
-                         payments.inbound (keyed by debtor)
+                    payments.inbound — pacs.008 XML, keyed by debtor BICFI
   Python bank simulator ──────────────────────────────────────┐
   (ALPHA_BANK, BETA_BANK,                                      ▼
    GAMMA_CU, DELTA_FIN)                          ┌──────────────────────────┐
@@ -37,10 +39,11 @@ production rails care about.
                   settlement_accounts                                     payment_audit
                   ledger_entries (double-entry)                       every message + outcome
                   processed_messages (idempotency)
+                  outbox_events (transactional outbox)
                               │                                                 │
                               ▼                                                 ▼
               payments.cleared / payments.rejected              Python reconciliation job
-              (outcome events for downstream)                   replays audit vs. balances
+              (exactly-once via outbox poller)                  replays audit vs. balances
 ```
 
 ## Ask the Rail — AI Operations Copilot
@@ -53,13 +56,20 @@ Ask questions an on-call engineer would ask:
 - _"which participant is running lowest on liquidity right now?"_
 - _"show me ALPHA_BANK's recent rejected payments"_
 
-Claude plans its own tool calls against the audit trail and hub API, then answers with cited message IDs and real numbers. The copilot has four read-only tools: single payment lookup, audit trail search, live balance retrieval, and Mongo aggregation stats.
+Claude plans its own tool calls against the audit trail and hub API, then
+answers with cited message IDs and real numbers. The copilot has four
+read-only tools: single payment lookup, audit trail search, live balance
+retrieval, and Mongo aggregation stats.
 
-**Design rule:** the AI is strictly advisory and never touches the settlement path. There is no tool that can create, retry, reverse, or modify a payment. Clearing stays deterministic and auditable; the LLM sits outside the path of money movement entirely.
+**Design rule:** the AI is strictly advisory and never touches the settlement
+path. There is no tool that can create, retry, reverse, or modify a payment.
+Clearing stays deterministic and auditable; the LLM sits outside the path of
+money movement entirely.
 
 ### Running the copilot
 
-Requires the main stack running (postgres, mongo, kafka, hub) and an Anthropic API key from [console.anthropic.com](https://console.anthropic.com).
+Requires the main stack running (postgres, mongo, kafka, hub) and an
+Anthropic API key from [console.anthropic.com](https://console.anthropic.com).
 
 ```bash
 cd copilot
@@ -104,9 +114,23 @@ regardless of payment direction. A→B and B→A payments processed concurrently
 can therefore never deadlock.
 
 **Kafka partitioning by debtor.** `payments.inbound` is keyed by the debtor
-participant, so all traffic from one institution lands on one partition and
-is processed in order. That makes liquidity behaviour and the velocity risk
-check deterministic per debtor. Outcome topics are keyed by messageId.
+participant's BICFI, so all traffic from one institution lands on one
+partition and is processed in order. That makes liquidity behaviour and the
+velocity risk check deterministic per debtor. Outcome topics are keyed by
+messageId.
+
+**Transactional outbox for exactly-once delivery.** Outcome events are written
+to an `outbox_events` table in the same Postgres transaction as the
+settlement, then a background poller delivers them to Kafka and marks them
+published. A crash between commit and publish is safe — the poller retries on
+restart. This closes the gap where a process death between the DB commit and
+the Kafka send would silently drop an outcome event.
+
+**ISO 20022 pacs.008 XML on the inbound rail.** The bank simulator emits
+structurally valid FIToFICstmrCdtTrf envelopes; the hub parses them with
+namespace-tolerant XPath extraction. Using local-name() matching instead of
+namespace-prefixed XPath means the consumer is tolerant of prefix variations
+across senders — a common real-world integration headache.
 
 **MongoDB for the audit trail.** Audit records are write-once,
 schema-flexible (real ISO 20022 payloads vary widely by message type), and
@@ -120,23 +144,21 @@ balances via the REST API. Any divergence fails the run.
 
 ## Running it
 
-Requires Docker, Java 17 + Maven (to run the hub locally), Python 3.10+.
+Requires Docker, Java 17 + Maven, Python 3.10+.
 
 ```bash
-# 1. Infrastructure (Postgres seeds itself with participants)
+# 1. Infrastructure — Postgres seeds itself with participant accounts
 docker compose up -d postgres mongo kafka
 
-# 2. The hub — either in Docker:
-docker compose up -d hub
-#    ...or locally for development:
+# 2. The hub
 cd hub && mvn spring-boot:run
 
-# 3. Generate traffic (from host, Kafka is on localhost:9094)
+# 3. Generate pacs.008 traffic
 cd participants
-pip install -r requirements.txt
-python bank_simulator.py --count 200 --rate 20 --duplicate-pct 5
+pip3 install -r requirements.txt
+python3 bank_simulator.py --count 200 --rate 20 --duplicate-pct 5
 
-# 4. Watch outcomes
+# 4. Watch outcome events
 docker compose exec kafka kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic payments.cleared --from-beginning
 
@@ -144,7 +166,7 @@ docker compose exec kafka kafka-console-consumer.sh \
 curl -s localhost:8080/api/v1/accounts | python3 -m json.tool
 
 # 6. Prove the books balance
-python reconciliation.py
+python3 reconciliation.py
 ```
 
 The simulator deliberately redelivers ~5% of messages. The reconciliation
@@ -188,20 +210,23 @@ curl -s localhost:8080/api/v1/payments/demo-001
 ## Tests
 
 ```bash
-cd hub && mvn test              # JUnit: validation rules, double-entry
-                                # invariants, liquidity rejection, lock ordering
-cd participants && pytest       # reconciliation math: zero-sum property,
-                                # per-participant nets, divergence detection
+cd hub && mvn test        # JUnit: validation rules, double-entry invariants,
+                          # liquidity rejection, lock ordering
+cd participants && pytest  # reconciliation math: zero-sum property,
+                          # per-participant nets, divergence detection
+cd copilot && pytest      # tool logic: query building, record shaping,
+                          # limit clamping, stats aggregation
 ```
 
 ## Honest limitations
 
 - One currency (CAD) and gross settlement only; no netting cycles, no FX.
 - Risk screening is a single velocity rule — a seam, not a fraud engine.
-- Single Kafka broker, no exactly-once producer transactions on the outcome
-  topics (outcome events are at-least-once; consumers should key on messageId).
-- Message format is JSON shaped after pacs.008 fields, not the full ISO 20022
-  XML schema.
+- Single Kafka broker; the outbox poller provides exactly-once delivery
+  but a multi-broker setup would need additional coordination.
+- Active-active multi-region architecture is out of scope — the real RTR's
+  coordination problem under strict latency SLAs is a different class of
+  engineering entirely.
 
 Each of these is a deliberate scope cut, and each is a natural next step.
 
