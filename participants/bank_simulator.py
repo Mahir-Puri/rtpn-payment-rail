@@ -1,51 +1,77 @@
-"""Participant bank simulator.
+"""Participant bank simulator — emits ISO 20022 pacs.008 XML messages.
 
-Generates credit-transfer messages and produces them onto payments.inbound,
-keyed by debtor participant so all traffic from one institution stays on one
-partition (ordering guarantee). A configurable fraction of messages are
-deliberate duplicates, to demonstrate that the hub settles them exactly once.
+Each message is a minimal but structurally valid FIToFICstmrCdtTrf envelope.
+The namespace is urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08 (pacs.008 version 8).
 
 Usage:
-    python bank_simulator.py --count 200 --rate 20 --duplicate-pct 5
+    python3 bank_simulator.py --count 200 --rate 20 --duplicate-pct 5
 """
 
 import argparse
-import json
 import random
 import time
 import uuid
 
 PARTICIPANTS = ["ALPHA_BANK", "BETA_BANK", "GAMMA_CU", "DELTA_FIN"]
 
+PACS008_NS = "urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08"
 
-def build_payment():
+
+def build_pacs008(message_id=None):
+    """Build a minimal pacs.008 FIToFICstmrCdtTrf XML string."""
+    if message_id is None:
+        message_id = str(uuid.uuid4())
     debtor, creditor = random.sample(PARTICIPANTS, 2)
-    return {
-        "messageId": str(uuid.uuid4()),
-        "endToEndId": f"E2E-{uuid.uuid4().hex[:12].upper()}",
-        "debtorParticipant": debtor,
-        "creditorParticipant": creditor,
-        "amount": round(random.uniform(5, 5000), 2),
-        "currency": "CAD",
-    }
+    amount = round(random.uniform(5, 5000), 2)
+    e2e_id = f"E2E-{uuid.uuid4().hex[:12].upper()}"
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="{PACS008_NS}">
+  <FIToFICstmrCdtTrf>
+    <GrpHdr>
+      <MsgId>{message_id}</MsgId>
+      <CreDtTm>{time.strftime('%Y-%m-%dT%H:%M:%S')}</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <SttlmInf>
+        <SttlmMtd>CLRG</SttlmMtd>
+      </SttlmInf>
+    </GrpHdr>
+    <CdtTrfTxInf>
+      <PmtId>
+        <EndToEndId>{e2e_id}</EndToEndId>
+      </PmtId>
+      <IntrBkSttlmAmt Ccy="CAD">{amount:.2f}</IntrBkSttlmAmt>
+      <DbtrAgt>
+        <FinInstnId>
+          <BICFI>{debtor}</BICFI>
+        </FinInstnId>
+      </DbtrAgt>
+      <CdtrAgt>
+        <FinInstnId>
+          <BICFI>{creditor}</BICFI>
+        </FinInstnId>
+      </CdtrAgt>
+    </CdtTrfTxInf>
+  </FIToFICstmrCdtTrf>
+</Document>"""
+    return message_id, debtor, xml
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate payment traffic onto the rail")
-    parser.add_argument("--bootstrap", default="localhost:9094", help="Kafka bootstrap server")
+    parser = argparse.ArgumentParser(description="Generate pacs.008 payment traffic")
+    parser.add_argument("--bootstrap", default="localhost:9094")
     parser.add_argument("--topic", default="payments.inbound")
-    parser.add_argument("--count", type=int, default=100, help="Total messages to send")
-    parser.add_argument("--rate", type=float, default=10.0, help="Messages per second")
-    parser.add_argument("--duplicate-pct", type=float, default=5.0,
-                        help="Percent of sends that redeliver a previous message")
+    parser.add_argument("--count", type=int, default=100)
+    parser.add_argument("--rate", type=float, default=10.0)
+    parser.add_argument("--duplicate-pct", type=float, default=5.0)
     args = parser.parse_args()
 
-    from kafka import KafkaProducer  # imported here so tests don't need a broker
+    from kafka import KafkaProducer
 
     producer = KafkaProducer(
         bootstrap_servers=args.bootstrap,
         key_serializer=lambda k: k.encode("utf-8"),
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        value_serializer=lambda v: v.encode("utf-8"),
     )
 
     sent = []
@@ -54,18 +80,19 @@ def main():
 
     for i in range(args.count):
         if sent and random.uniform(0, 100) < args.duplicate_pct:
-            payment = random.choice(sent)  # deliberate redelivery
+            msg_id, debtor, xml = random.choice(sent)
             duplicates += 1
         else:
-            payment = build_payment()
-            sent.append(payment)
+            msg_id, debtor, xml = build_pacs008()
+            sent.append((msg_id, debtor, xml))
 
-        producer.send(args.topic, key=payment["debtorParticipant"], value=payment)
+        producer.send(args.topic, key=debtor, value=xml)
         if interval:
             time.sleep(interval)
 
     producer.flush()
-    print(f"Sent {args.count} messages ({len(sent)} unique, {duplicates} duplicates) "
+    print(f"Sent {args.count} pacs.008 messages "
+          f"({len(sent)} unique, {duplicates} duplicates) "
           f"to {args.topic} via {args.bootstrap}")
 
 
